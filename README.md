@@ -16,21 +16,20 @@ Streamlit dashboard.
 
 ## Project structure
 
-```text
-RetailPulse/
+RetailPulse_MVP/
 ├── app/
+│   ├── __init__.py
 │   └── dashboard.py
 ├── data/
 │   └── retail_data.csv
-├── models/
-├── notebooks/
 ├── src/
+│   ├── __init__.py
 │   ├── forecasting.py
 │   ├── preprocessing.py
 │   └── segmentation.py
+├── .gitignore
 ├── requirements.txt
 └── README.md
-```
 
 ## Run locally
 
@@ -59,7 +58,7 @@ pip install -r requirements.txt
 ### 3. Launch dashboard
 
 ```bash
-streamlit run app/dashboard.py
+.\.venv\Scripts\python.exe -m streamlit run app/dashboard.py
 ```
 
 Then open the local Streamlit URL shown in your terminal.
