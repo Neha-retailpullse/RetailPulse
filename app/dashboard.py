@@ -87,7 +87,7 @@ st.caption("AI-Powered Customer Analytics & Demand Forecasting Platform")
 
 
 df = load_data()
-st.write("Available columns:", df.columns.tolist())
+
 # Interactive dashboard filters
 st.subheader("🔎 Dashboard Filters")
 
@@ -196,15 +196,14 @@ inventory = (
       )
 )
 
-inventory["Status"] = inventory.apply(
-    lambda r: "🔴 Reorder"
-    if r["CurrentStock"] < max(20, r["UnitsSold"] / 20)
+inventory["Status"] = inventory["CurrentStock"].apply(
+    lambda stock: "🔴 Reorder"
+    if stock <= 10
     else (
         "🟡 Monitor"
-        if r["CurrentStock"] < max(40, r["UnitsSold"] / 10)
+        if stock <= 30
         else "🟢 Healthy"
-    ),
-    axis=1
+    )
 )
 
 # Show inventory summary
@@ -600,11 +599,14 @@ stock_threshold = st.slider(
 inventory = product_summary.copy()
 
 inventory["Stock Status"] = inventory["Current_Stock"].apply(
-    lambda stock: "🔴 Low Stock"
-    if stock <= stock_threshold
-    else "🟢 In Stock"
+    lambda stock: "🔴 Reorder"
+    if stock <= 10
+    else (
+        "🟡 Monitor"
+        if stock <= 30
+        else "🟢 Healthy"
+    )
 )
-
 low_stock = inventory[
     inventory["Current_Stock"] <= stock_threshold
 ].sort_values("Current_Stock")
