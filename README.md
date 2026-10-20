@@ -16,6 +16,9 @@ Streamlit dashboard.
 
 ## Project structure
 
+## Project structure
+
+```text
 RetailPulse_MVP/
 ├── app/
 │   ├── __init__.py
@@ -30,6 +33,9 @@ RetailPulse_MVP/
 ├── .gitignore
 ├── requirements.txt
 └── README.md
+```
+
+
 
 ## Run locally
 
