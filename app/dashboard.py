@@ -84,6 +84,7 @@ st.markdown("""
 
 st.title("📊 RetailPulse")
 st.caption("AI-Powered Customer Analytics & Demand Forecasting Platform")
+st.subheader("📌 Business Overview")
 
 
 df = load_data()
