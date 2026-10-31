@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.preprocessing import load_data, daily_sales
+from src.preprocessing import load_data, daily_sales, add_sale
 from src.segmentation import build_rfm, segment_customers
 from src.forecasting import train_forecast
 
@@ -30,11 +30,64 @@ try:
 except Exception as exc:
     st.error(f"Could not load data: {exc}")
     st.stop()
+try:
+    df = load_data()
+except Exception as exc:
+    st.error(f"Could not load data: {exc}")
+    st.stop()
+
+# PASTE THE ADD NEW SALE FORM CODE HERE
 
 if df is None or df.empty:
     st.warning("The dataset is empty.")
     st.stop()
+if df is None or df.empty:
+    st.warning("The dataset is empty.")
+    st.stop()
+# Add New Sale
+st.subheader("➕ Add New Sale")
 
+with st.expander("Record a new sale"):
+    products_df = load_data()
+
+    with st.form("add_sale_form"):
+        product_options = products_df[
+            ["ProductID", "ProductName"]
+        ].drop_duplicates()
+
+        selected_product = st.selectbox(
+            "Select Product",
+            product_options["ProductID"].tolist(),
+            format_func=lambda x: (
+                f"{x} - "
+                f"{product_options.loc[product_options['ProductID'] == x, 'ProductName'].iloc[0]}"
+            )
+        )
+
+        customer_id = st.text_input("Customer ID")
+        sale_date = st.date_input("Sale Date")
+        quantity = st.number_input("Quantity", min_value=1, step=1)
+
+        region = st.selectbox(
+            "Region",
+            sorted(products_df["Region"].dropna().unique())
+        )
+
+        submitted = st.form_submit_button("Save Sale")
+
+        if submitted:
+            try:
+                add_sale(
+                    sale_date,
+                    customer_id,
+                    selected_product,
+                    int(quantity),
+                    region
+                )
+                st.success("Sale recorded successfully!")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not record sale: {exc}")
 required = ["InvoiceDate", "Revenue", "Quantity", "CustomerID"]
 missing = [col for col in required if col not in df.columns]
 if missing:
@@ -108,7 +161,7 @@ i3.metric("Unique Products", f"{filtered[product_col_name].nunique():,}" if prod
 st.subheader("📈 Sales Trend")
 if not daily.empty:
     fig = px.line(daily, x="ds", y="y", markers=True, labels={"ds": "Date", "y": "Revenue"}, title="Daily Revenue")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 else:
     st.info("Not enough sales data for a trend.")
 
@@ -127,31 +180,47 @@ try:
             actual = view.dropna(subset=["y"])
             if not actual.empty:
                 forecast_fig.add_scatter(x=actual["ds"], y=actual["y"], mode="lines", name="Actual Revenue")
-        st.plotly_chart(forecast_fig, use_container_width=True)
+        st.plotly_chart(forecast_fig, width="stretch")
 except Exception as exc:
     st.warning(f"Forecasting could not run: {exc}")
 
 # Customer segmentation
 st.subheader("👥 Customer Segmentation")
+
 try:
     rfm = build_rfm(filtered)
     segmented, _ = segment_customers(rfm)
+
     if segmented.empty:
         st.info("Not enough customer records for segmentation.")
     else:
         summary = segmented.groupby("Cluster").agg(
-            Customers=("CustomerID", "count"), AvgRecency=("Recency", "mean"),
-            AvgFrequency=("Frequency", "mean"), AvgMonetary=("Monetary", "mean")
+            Customers=("CustomerID", "count"),
+            AvgRecency=("Recency", "mean"),
+            AvgFrequency=("Frequency", "mean"),
+            AvgMonetary=("Monetary", "mean")
         ).reset_index()
+
         left, right = st.columns(2)
+
         with left:
-            scatter = px.scatter(segmented, x="Frequency", y="Monetary",
-                                 color=segmented["Cluster"].astype(str),
-                                 hover_data=[c for c in ["CustomerID", "Recency"] if c in segmented.columns],
-                                 labels={"color": "Cluster"}, title="Customer Frequency vs Spend")
-            st.plotly_chart(scatter, use_container_width=True)
+            scatter = px.scatter(
+                segmented,
+                x="Frequency",
+                y="Monetary",
+                color=segmented["Cluster"].astype(str),
+                hover_data=[
+                    c for c in ["CustomerID", "Recency"]
+                    if c in segmented.columns
+                ],
+                labels={"color": "Cluster"},
+                title="Customer Frequency vs Spend"
+            )
+            st.plotly_chart(scatter, width="stretch")
+
         with right:
-            st.dataframe(summary.round(2), use_container_width=True)
+            st.dataframe(summary.round(2), width="stretch")
+
 except Exception as exc:
     st.warning(f"Customer segmentation could not run: {exc}")
 
@@ -167,9 +236,9 @@ if product_col_name:
                              title="Top 10 Products by Revenue",
                              labels={product_col_name: "Product", "Revenue": "Revenue"})
         product_fig.update_layout(xaxis_tickangle=-35)
-        st.plotly_chart(product_fig, use_container_width=True)
+        st.plotly_chart(product_fig, width="stretch")
     with right:
-        st.dataframe(products.head(10), use_container_width=True)
+       st.dataframe(products.head(10), width="stretch")
 else:
     st.info("Product analytics requires ProductName or ProductID.")
 
@@ -182,7 +251,7 @@ if {"ProductID", "ProductName", "StockQuantity"}.issubset(filtered.columns):
         lambda r: "🔴 Reorder" if r["CurrentStock"] < max(20, r["UnitsSold"] / 20)
         else ("🟡 Monitor" if r["CurrentStock"] < max(40, r["UnitsSold"] / 10) else "🟢 Healthy"),
         axis=1)
-    st.dataframe(inventory.sort_values("CurrentStock"), use_container_width=True)
+    st.dataframe(inventory.sort_values("CurrentStock"), width="stretch")
 else:
     st.info("Inventory alerts require ProductID, ProductName, and StockQuantity columns.")
 
