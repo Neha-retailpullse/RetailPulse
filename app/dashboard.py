@@ -1,84 +1,23 @@
-
-
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import streamlit as st
+import pandas as pd
 import plotly.express as px
+import streamlit as st
+
 from src.preprocessing import load_data, daily_sales
 from src.segmentation import build_rfm, segment_customers
 from src.forecasting import train_forecast
 
 st.set_page_config(page_title="RetailPulse", page_icon="📊", layout="wide")
-
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #F4F7FC;
-    }
-
-    [data-testid="stHeader"] {
-        background-color: transparent;
-    }
-
-    .block-container {
-        max-width: 1500px;
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-        padding-left: 2.5rem;
-        padding-right: 2.5rem;
-    }
-
-    h1 {
-        color: #17365D !important;
-        font-size: 2.3rem !important;
-        font-weight: 800 !important;
-    }
-
-    h2, h3 {
-        color: #24527A !important;
-        font-weight: 700 !important;
-    }
-
-    [data-testid="stMetric"] {
-        background-color: #FFFFFF;
-        border: 1px solid #DCE6F1;
-        padding: 22px 20px;
-        border-radius: 16px;
-        box-shadow: 0 4px 12px rgba(23, 54, 93, 0.08);
-    }
-
-    [data-testid="stMetricLabel"] {
-        color: #52657A !important;
-        font-size: 14px !important;
-    }
-
-    [data-testid="stMetricValue"] {
-        color: #17365D !important;
-        font-weight: 750 !important;
-    }
-
-    [data-testid="stDataFrame"] {
-        border: 1px solid #DCE6F1;
-        border-radius: 12px;
-        overflow: hidden;
-        background-color: #FFFFFF;
-    }
-
-    [data-testid="stSelectbox"],
-    [data-testid="stDateInput"] {
-        background-color: #FFFFFF;
-        border-radius: 10px;
-    }
-
-    [data-testid="stCaptionContainer"] {
-        color: #64748B;
-    }
-
-    hr {
-        border-color: #DCE6F1;
-    }
+.stApp { background-color: #F4F7FC; }
+.block-container { max-width: 1500px; padding-top: 2rem; padding-bottom: 3rem; }
+h1 { color: #17365D !important; font-weight: 800 !important; }
+h2, h3 { color: #24527A !important; }
+[data-testid="stMetric"] { background: white; border: 1px solid #DCE6F1; padding: 18px; border-radius: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -86,563 +25,165 @@ st.title("📊 RetailPulse")
 st.caption("AI-Powered Customer Analytics & Demand Forecasting Platform")
 st.subheader("📌 Business Overview")
 
+try:
+    df = load_data()
+except Exception as exc:
+    st.error(f"Could not load data: {exc}")
+    st.stop()
 
-df = load_data()
+if df is None or df.empty:
+    st.warning("The dataset is empty.")
+    st.stop()
 
-# Interactive dashboard filters
-st.subheader("🔎 Dashboard Filters")
+required = ["InvoiceDate", "Revenue", "Quantity", "CustomerID"]
+missing = [col for col in required if col not in df.columns]
+if missing:
+    st.error(f"Missing required columns: {', '.join(missing)}")
+    st.stop()
 
-import pandas as pd
-df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
-
-col_date, col_product = st.columns(2)
-
-with col_date:
-    start_date, end_date = st.date_input(
-        "Select date range",
-       value=(df["InvoiceDate"].min().date(), df["InvoiceDate"].max().date()),
-min_value=df["InvoiceDate"].min().date(),
-max_value=df["InvoiceDate"].max().date(),
-    )
-
-with col_product:
-    products = ["All Products"] + sorted(df["ProductName"].unique().tolist())
-    selected_product = st.selectbox("Select product", products)
-
-
-# Apply filters
-df = df[
-    (df["InvoiceDate"].dt.date >= start_date)
-    & (df["InvoiceDate"].dt.date <= end_date)
-]
-
-
-  
-
-if selected_product != "All Products":
-    df = df[df["ProductName"] == selected_product]
-
+df = df.copy()
+df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"], errors="coerce")
+df["Revenue"] = pd.to_numeric(df["Revenue"], errors="coerce").fillna(0)
+df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
+df = df.dropna(subset=["InvoiceDate"])
 if df.empty:
-    st.warning("No sales found for the selected filters.")
+    st.warning("No valid invoice dates found.")
+    st.stop()
+
+# Filters
+st.subheader("🔎 Dashboard Filters")
+date_min, date_max = df["InvoiceDate"].min().date(), df["InvoiceDate"].max().date()
+date_col, product_col = st.columns(2)
+with date_col:
+    selected_dates = st.date_input("Invoice date range", value=(date_min, date_max),
+                                   min_value=date_min, max_value=date_max)
+product_col_name = "ProductName" if "ProductName" in df.columns else (
+    "ProductID" if "ProductID" in df.columns else None)
+with product_col:
+    product_options = sorted(df[product_col_name].dropna().astype(str).unique()) if product_col_name else []
+    selected_products = st.multiselect("Products (empty = all)", product_options)
+
+filtered = df.copy()
+if isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 2:
+    filtered = filtered[filtered["InvoiceDate"].dt.date.between(selected_dates[0], selected_dates[1])]
+elif isinstance(selected_dates, (tuple, list)) and len(selected_dates) == 1:
+    filtered = filtered[filtered["InvoiceDate"].dt.date == selected_dates[0]]
+if product_col_name and selected_products:
+    filtered = filtered[filtered[product_col_name].astype(str).isin(selected_products)]
+if filtered.empty:
+    st.info("No data matches these filters. Change the date range or product selection.")
     st.stop()
 
 # KPIs
-revenue = df["Revenue"].sum()
-orders = len(df)
-customers = df["CustomerID"].nunique()
-units = df["Quantity"].sum()
-
-# Display KPI cards
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.markdown(
-        f"""
-        <div style="background:#FFFFFF; padding:22px; border-radius:12px;
-                    border:1px solid #E2E8F0; border-top:4px solid #2563EB;">
-            <p style="color:#64748B; margin:0; font-size:14px;">Total Revenue</p>
-            <h2 style="color:#17365D; margin:8px 0 0 0;">₹{revenue:,.0f}</h2>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with col2:
-    st.markdown(
-        f"""
-        <div style="background:#FFFFFF; padding:22px; border-radius:12px;
-                    border:1px solid #E2E8F0; border-top:4px solid #0F766E;">
-            <p style="color:#64748B; margin:0; font-size:14px;">Transactions</p>
-            <h2 style="color:#17365D; margin:8px 0 0 0;">{orders:,}</h2>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with col3:
-    st.markdown(
-        f"""
-        <div style="background:#FFFFFF; padding:22px; border-radius:12px;
-                    border:1px solid #E2E8F0; border-top:4px solid #7C3AED;">
-            <p style="color:#64748B; margin:0; font-size:14px;">Customers</p>
-            <h2 style="color:#17365D; margin:8px 0 0 0;">{customers:,}</h2>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with col4:
-    st.markdown(
-        f"""
-        <div style="background:#FFFFFF; padding:22px; border-radius:12px;
-                    border:1px solid #E2E8F0; border-top:4px solid #D97706;">
-            <p style="color:#64748B; margin:0; font-size:14px;">Units Sold</p>
-            <h2 style="color:#17365D; margin:8px 0 0 0;">{units:,.0f}</h2>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-st.write("")
-
-
-# Inventory Alerts
-st.subheader("📦 Inventory Alerts")
-
-inventory = (
-    df.groupby(["ProductID", "ProductName"], as_index=False)
-      .agg(
-          CurrentStock=("StockQuantity", "last"),
-          UnitsSold=("Quantity", "sum")
-      )
-)
-
-inventory["Status"] = inventory["CurrentStock"].apply(
-    lambda stock: "🔴 Reorder"
-    if stock <= 10
-    else (
-        "🟡 Monitor"
-        if stock <= 30
-        else "🟢 Healthy"
-    )
-)
-
-# Show inventory summary
-reorder_count = (inventory["Status"] == "🔴 Reorder").sum()
-monitor_count = (inventory["Status"] == "🟡 Monitor").sum()
-healthy_count = (inventory["Status"] == "🟢 Healthy").sum()
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric("🔴 Reorder Needed", reorder_count)
-col2.metric("🟡 Needs Monitoring", monitor_count)
-col3.metric("🟢 Healthy Stock", healthy_count)
-
+st.subheader("📌 Business Overview")
+revenue = filtered["Revenue"].sum()
+transactions = filtered["InvoiceNo"].nunique() if "InvoiceNo" in filtered.columns else len(filtered)
+customers = filtered["CustomerID"].nunique()
+units = filtered["Quantity"].sum()
+avg_transaction = revenue / transactions if transactions else 0
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Total Revenue", f"₹{revenue:,.0f}")
+k2.metric("Transactions", f"{transactions:,.0f}")
+k3.metric("Customers", f"{customers:,.0f}")
+k4.metric("Units Sold", f"{units:,.0f}")
+k5.metric("Avg. Transaction Value", f"₹{avg_transaction:,.0f}")
 st.divider()
 
-# Display products needing attention first
-status_order = {
-    "🔴 Reorder": 0,
-    "🟡 Monitor": 1,
-    "🟢 Healthy": 2
-}
-
-inventory["Priority"] = inventory["Status"].map(status_order)
-
-inventory = inventory.sort_values(
-    ["Priority", "CurrentStock"],
-    ascending=[True, True]
-)
-
-
-inventory_display = inventory.drop(columns=["Priority"]).rename(
-    columns={
-        "ProductID": "Product ID",
-        "ProductName": "Product Name",
-        "CurrentStock": "Current Stock",
-        "UnitsSold": "Units Sold",
-        "Status": "Stock Status"
-    }
-)
-
-# Stock Status Filter
-st.markdown("### 🔎 Filter Inventory")
-
-status_options = [
-    "All",
-    "🔴 Reorder",
-    "🟡 Monitor",
-    "🟢 Healthy"
-]
-
-selected_status = st.selectbox(
-    "Select stock status",
-    status_options
-)
-
-# Filter products based on selected status
-if selected_status == "All":
-    filtered_inventory = inventory_display
-else:
-    filtered_inventory = inventory_display[
-        inventory_display["Stock Status"] == selected_status
-    ]
-
-# Show filtered inventory
-st.dataframe(
-    filtered_inventory,
-    use_container_width=True,
-    hide_index=True
-)
-
-st.caption(f"Showing {len(filtered_inventory)} products")
-
-
-st.divider()
-
-
-# Sales Insights
+# Sales insights and trend
 st.subheader("💡 Sales Insights")
-
-# Calculate average revenue per transaction
-average_order_value = revenue / orders if orders > 0 else 0
-
-# Find the best-selling product
-product_sales = (
-    df.groupby("ProductName", as_index=False)
-      .agg(TotalUnits=("Quantity", "sum"))
-      .sort_values("TotalUnits", ascending=False)
-)
-
-if not product_sales.empty:
-    best_product = product_sales.iloc[0]["ProductName"]
-    best_product_units = product_sales.iloc[0]["TotalUnits"]
+i1, i2, i3 = st.columns(3)
+if "ProductName" in filtered.columns:
+    product_revenue = filtered.groupby("ProductName")["Revenue"].sum().sort_values(ascending=False)
+    top_name = str(product_revenue.index[0]) if not product_revenue.empty else "N/A"
+    top_value = float(product_revenue.iloc[0]) if not product_revenue.empty else 0
 else:
-    best_product = "No sales data"
-    best_product_units = 0
+    top_name, top_value = "Not available", 0
+daily = daily_sales(filtered)
+best_day = daily.loc[daily["y"].idxmax()] if not daily.empty else None
+i1.metric("Top Product by Revenue", top_name, help=f"Revenue: ₹{top_value:,.0f}")
+i2.metric("Highest-Revenue Day", pd.to_datetime(best_day["ds"]).strftime("%d %b %Y") if best_day is not None else "N/A",
+          f"₹{best_day['y']:,.0f}" if best_day is not None else None)
+i3.metric("Unique Products", f"{filtered[product_col_name].nunique():,}" if product_col_name else "N/A")
 
-# Display insight cards
-insight1, insight2 = st.columns(2)
-
-with insight1:
-    st.metric("Average Order Value", f"₹{average_order_value:,.2f}")
-
-with insight2:
-    st.metric("Best-Selling Product", str(best_product))
-
-st.info(
-    f"Your store recorded ₹{revenue:,.2f} in revenue across "
-    f"{orders:,} transactions. The best-selling product is "
-    f"{best_product}, with {best_product_units:,.0f} units sold."
-)
-
-st.divider()
-
-# Sales Trend
 st.subheader("📈 Sales Trend")
-daily = daily_sales(df)
-fig = px.line(
-    daily,
-    x="ds",
-    y="y",
-    labels={"ds": "Date", "y": "Revenue"},
-    template="plotly_white",
-    title="Daily Revenue"
-)
-
-fig.update_traces(
-    line=dict(color="#2563EB", width=3),
-    hovertemplate="Date: %{x|%d %b %Y}<br>Revenue: %{y:,.2f}<extra></extra>"
-)
-
-fig.update_layout(
-    title_font=dict(size=20, color="#17365D"),
-    font=dict(family="Arial", color="#52657A"),
-    paper_bgcolor="#FFFFFF",
-    plot_bgcolor="#FFFFFF",
-    margin=dict(l=20, r=20, t=65, b=20),
-    xaxis=dict(showgrid=False, title="Date"),
-    yaxis=dict(showgrid=True, gridcolor="#E8EEF5", title="Revenue")
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# Demand Forecast
-# Demand Forecast
-st.subheader("🔮 30-Day Demand Forecast")
-
-try:
-    model, forecast = train_forecast(daily, periods=30)
-    forecast_view = forecast.tail(60)
-
-    fig2 = px.line(
-        forecast_view,
-        x="ds",
-        y="yhat",
-        labels={"ds": "Date", "yhat": "Forecast Revenue"},
-        title="Historical + Forecasted Revenue",
-        template="plotly_white"
-    )
-
-    fig2.update_traces(
-        line=dict(color="#0F766E", width=3)
-    )
-
-    fig2.update_layout(
-        title_font=dict(size=20, color="#17365D"),
-        font=dict(family="Arial", color="#52657A"),
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        margin=dict(l=20, r=20, t=65, b=20),
-        xaxis=dict(showgrid=False, title="Date"),
-        yaxis=dict(showgrid=True, gridcolor="#E8EEF5", title="Forecast Revenue")
-    )
-
-    st.plotly_chart(fig2, use_container_width=True)
-
-except Exception as e:
-    st.warning(f"Forecasting could not run yet: {e}")
-
-
-# Customer Segmentation
-st.subheader("👥 Customer Segmentation")
-
-# Build customer segments
-rfm = build_rfm(df)
-segmented, _ = segment_customers(rfm)
-
-# Summarize each customer cluster
-cluster_summary = (
-    segmented.groupby("Cluster")
-    .agg(
-        Customers=("CustomerID", "nunique"),
-        AvgRecency=("Recency", "mean"),
-        AvgFrequency=("Frequency", "mean"),
-        AvgMonetary=("Monetary", "mean")
-    )
-    .reset_index()
-)
-
-# Add business-friendly labels to customer groups
-high_value_cluster = (
-    cluster_summary["AvgMonetary"] + cluster_summary["AvgFrequency"]
-).idxmax()
-
-needs_attention_cluster = cluster_summary["AvgRecency"].idxmax()
-
-cluster_summary["Customer Group"] = "Regular Customers"
-cluster_summary["Recommendation"] = "Monitor purchases and encourage repeat orders."
-
-# Identify high-value customers
-cluster_summary.loc[
-    cluster_summary.index == high_value_cluster,
-    ["Customer Group", "Recommendation"]
-] = [
-    "High-Value Customers",
-    "Reward with loyalty benefits and personalized offers."
-]
-
-# Identify customers who may need re-engagement
-if needs_attention_cluster != high_value_cluster:
-    cluster_summary.loc[
-        cluster_summary.index == needs_attention_cluster,
-        ["Customer Group", "Recommendation"]
-    ] = [
-        "Needs Re-engagement",
-        "Send a win-back offer to encourage another purchase."
-    ]
-
-# Identify frequent buyers who are not already in another group
-remaining = cluster_summary[
-    ~cluster_summary.index.isin(
-        [high_value_cluster, needs_attention_cluster]
-    )
-]
-
-if not remaining.empty:
-    loyal_cluster = remaining["AvgFrequency"].idxmax()
-
-    cluster_summary.loc[
-        cluster_summary.index == loyal_cluster,
-        ["Customer Group", "Recommendation"]
-    ] = [
-        "Frequent Buyers",
-        "Use loyalty rewards to encourage continued purchases."
-    ]
-
-# Round average values for readability
-cluster_summary["AvgRecency"] = cluster_summary["AvgRecency"].round(1)
-cluster_summary["AvgFrequency"] = cluster_summary["AvgFrequency"].round(1)
-cluster_summary["AvgMonetary"] = cluster_summary["AvgMonetary"].round(2)
-
-# Show customer overview
-total_customers = segmented["CustomerID"].nunique()
-total_clusters = segmented["Cluster"].nunique()
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.metric("Customers Segmented", f"{total_customers:,}")
-
-with col2:
-    st.metric("Customer Groups", f"{total_clusters:,}")
-
-st.divider()
-
-# Customer frequency vs spending chart
-st.markdown("### 📊 Customer Spending Patterns")
-
-fig3 = px.scatter(
-    segmented,
-    x="Frequency",
-    y="Monetary",
-    color=segmented["Cluster"].astype(str),
-    hover_data=["CustomerID", "Recency"],
-    labels={
-        "Frequency": "Purchase Frequency",
-        "Monetary": "Total Spending",
-        "color": "Customer Group",
-        "Recency": "Days Since Last Purchase"
-    },
-    title="Customer Groups by Purchase Frequency and Spending",
-    template="plotly_white"
-)
-
-fig3.update_layout(
-    title_font=dict(size=18, color="#17365D"),
-    font=dict(family="Arial", color="#52657A"),
-    paper_bgcolor="#FFFFFF",
-    plot_bgcolor="#FFFFFF",
-    margin=dict(l=20, r=20, t=65, b=20),
-    xaxis=dict(showgrid=True, gridcolor="#E8EEF5"),
-    yaxis=dict(showgrid=True, gridcolor="#E8EEF5")
-)
-
-st.plotly_chart(fig3, use_container_width=True)
-
-# Customer group summary table
-st.markdown("### 📋 Customer Group Summary")
-
-cluster_display = cluster_summary.rename(
-    columns={
-        "Cluster": "Group ID",
-        "Customers": "Number of Customers",
-        "AvgRecency": "Avg. Days Since Purchase",
-        "AvgFrequency": "Avg. Purchase Frequency",
-        "AvgMonetary": "Avg. Customer Spending"
-    }
-)
-
-st.dataframe(
-    cluster_display,
-    use_container_width=True,
-    hide_index=True
-)
-
-st.caption(
-    "RetailPulse MVP • Customer groups are generated using RFM features "
-    "and the existing clustering model."
-)
-
-# ---------------- PRODUCT ANALYTICS ----------------
-st.divider()
-st.header("📦 Product Analytics")
-
-product_summary = (
-    df.groupby(["ProductID", "ProductName", "Category"], as_index=False)
-    .agg(
-        Units_Sold=("Quantity", "sum"),
-        Total_Revenue=("Revenue", "sum"),
-        Current_Stock=("StockQuantity", "last")
-    )
-    .sort_values("Total_Revenue", ascending=False)
-)
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Top Products by Revenue")
-    fig_product = px.bar(
-        product_summary.head(10),
-        x="ProductName",
-        y="Total_Revenue",
-        color="Category",
-        title="Top 10 Products by Revenue",
-        labels={
-            "ProductName": "Product",
-            "Total_Revenue": "Revenue"
-        },
-        template="plotly_white"
-    )
-    st.plotly_chart(fig_product, use_container_width=True)
-
-with col2:
-    st.subheader("Revenue by Category")
-    category_summary = (
-        df.groupby("Category", as_index=False)["Revenue"]
-        .sum()
-        .sort_values("Revenue", ascending=False)
-    )
-    fig_category = px.pie(
-        category_summary,
-        names="Category",
-        values="Revenue",
-        title="Revenue Share by Category",
-        template="plotly_white"
-    )
-    st.plotly_chart(fig_category, use_container_width=True)
-
-st.subheader("Product Performance")
-st.dataframe(
-    product_summary.rename(columns={
-        "ProductID": "Product ID",
-        "ProductName": "Product Name",
-        "Units_Sold": "Units Sold",
-        "Total_Revenue": "Total Revenue",
-        "Current_Stock": "Stock Quantity"
-    }),
-    use_container_width=True,
-    hide_index=True
-)
-
-# ---------------- INVENTORY ALERTS ----------------
-st.divider()
-st.header("🚨 Inventory Alerts")
-
-stock_threshold = st.slider(
-    "Low-stock alert threshold",
-    min_value=10,
-    max_value=100,
-    value=30,
-    step=5
-)
-
-inventory = product_summary.copy()
-
-inventory["Stock Status"] = inventory["Current_Stock"].apply(
-    lambda stock: "🔴 Reorder"
-    if stock <= 10
-    else (
-        "🟡 Monitor"
-        if stock <= 30
-        else "🟢 Healthy"
-    )
-)
-low_stock = inventory[
-    inventory["Current_Stock"] <= stock_threshold
-].sort_values("Current_Stock")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.metric("Products Tracked", len(inventory))
-
-with col2:
-    st.metric("Low-Stock Products", len(low_stock))
-
-if low_stock.empty:
-    st.success("No products are below the selected stock threshold.")
+if not daily.empty:
+    fig = px.line(daily, x="ds", y="y", markers=True, labels={"ds": "Date", "y": "Revenue"}, title="Daily Revenue")
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning(
-        f"{len(low_stock)} products have stock at or below "
-        f"{stock_threshold} units."
-    )
-    st.dataframe(
-        low_stock[[
-            "ProductID",
-            "ProductName",
-            "Category",
-            "Current_Stock",
-            "Units_Sold",
-            "Stock Status"
-        ]].rename(columns={
-            "ProductID": "Product ID",
-            "ProductName": "Product Name",
-            "Current_Stock": "Stock Quantity",
-            "Units_Sold": "Units Sold"
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
+    st.info("Not enough sales data for a trend.")
 
+# Forecast
+st.subheader("🔮 30-Day Demand Forecast")
+st.caption("Revenue forecasts are estimates and not guarantees.")
+try:
+    if daily["ds"].nunique() < 2:
+        st.info("Choose a date range with at least two distinct sales days to forecast.")
+    else:
+        model, forecast = train_forecast(daily, periods=30)
+        view = forecast.tail(min(len(forecast), 90))
+        forecast_fig = px.line(view, x="ds", y="yhat", labels={"ds": "Date", "yhat": "Forecast Revenue"},
+                               title="Historical + Forecasted Revenue")
+        if "y" in view.columns:
+            actual = view.dropna(subset=["y"])
+            if not actual.empty:
+                forecast_fig.add_scatter(x=actual["ds"], y=actual["y"], mode="lines", name="Actual Revenue")
+        st.plotly_chart(forecast_fig, use_container_width=True)
+except Exception as exc:
+    st.warning(f"Forecasting could not run: {exc}")
 
+# Customer segmentation
+st.subheader("👥 Customer Segmentation")
+try:
+    rfm = build_rfm(filtered)
+    segmented, _ = segment_customers(rfm)
+    if segmented.empty:
+        st.info("Not enough customer records for segmentation.")
+    else:
+        summary = segmented.groupby("Cluster").agg(
+            Customers=("CustomerID", "count"), AvgRecency=("Recency", "mean"),
+            AvgFrequency=("Frequency", "mean"), AvgMonetary=("Monetary", "mean")
+        ).reset_index()
+        left, right = st.columns(2)
+        with left:
+            scatter = px.scatter(segmented, x="Frequency", y="Monetary",
+                                 color=segmented["Cluster"].astype(str),
+                                 hover_data=[c for c in ["CustomerID", "Recency"] if c in segmented.columns],
+                                 labels={"color": "Cluster"}, title="Customer Frequency vs Spend")
+            st.plotly_chart(scatter, use_container_width=True)
+        with right:
+            st.dataframe(summary.round(2), use_container_width=True)
+except Exception as exc:
+    st.warning(f"Customer segmentation could not run: {exc}")
+
+# Product analytics
+st.subheader("🛍️ Product Analytics")
+if product_col_name:
+    agg = {"Revenue": ("Revenue", "sum"), "UnitsSold": ("Quantity", "sum")}
+    agg["Transactions"] = ("InvoiceNo", "nunique") if "InvoiceNo" in filtered.columns else ("Quantity", "count")
+    products = filtered.groupby(product_col_name, dropna=False).agg(**agg).reset_index().sort_values("Revenue", ascending=False)
+    left, right = st.columns([3, 2])
+    with left:
+        product_fig = px.bar(products.head(10), x=product_col_name, y="Revenue",
+                             title="Top 10 Products by Revenue",
+                             labels={product_col_name: "Product", "Revenue": "Revenue"})
+        product_fig.update_layout(xaxis_tickangle=-35)
+        st.plotly_chart(product_fig, use_container_width=True)
+    with right:
+        st.dataframe(products.head(10), use_container_width=True)
+else:
+    st.info("Product analytics requires ProductName or ProductID.")
+
+# Inventory alerts
+st.subheader("📦 Inventory Alerts")
+if {"ProductID", "ProductName", "StockQuantity"}.issubset(filtered.columns):
+    inventory = filtered.groupby(["ProductID", "ProductName"], as_index=False).agg(
+        CurrentStock=("StockQuantity", "last"), UnitsSold=("Quantity", "sum"))
+    inventory["Status"] = inventory.apply(
+        lambda r: "🔴 Reorder" if r["CurrentStock"] < max(20, r["UnitsSold"] / 20)
+        else ("🟡 Monitor" if r["CurrentStock"] < max(40, r["UnitsSold"] / 10) else "🟢 Healthy"),
+        axis=1)
+    st.dataframe(inventory.sort_values("CurrentStock"), use_container_width=True)
+else:
+    st.info("Inventory alerts require ProductID, ProductName, and StockQuantity columns.")
+
+st.caption("RetailPulse MVP • Built with Python, Scikit-learn, Prophet and Streamlit")
