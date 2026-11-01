@@ -30,11 +30,6 @@ try:
 except Exception as exc:
     st.error(f"Could not load data: {exc}")
     st.stop()
-try:
-    df = load_data()
-except Exception as exc:
-    st.error(f"Could not load data: {exc}")
-    st.stop()
 
 # PASTE THE ADD NEW SALE FORM CODE HERE
 
@@ -74,7 +69,6 @@ with st.expander("Record a new sale"):
         )
 
         submitted = st.form_submit_button("Save Sale")
-
         if submitted:
             try:
                 add_sale(
@@ -90,6 +84,7 @@ with st.expander("Record a new sale"):
                 st.error(f"Could not record sale: {exc}")
 required = ["InvoiceDate", "Revenue", "Quantity", "CustomerID"]
 missing = [col for col in required if col not in df.columns]
+
 if missing:
     st.error(f"Missing required columns: {', '.join(missing)}")
     st.stop()
@@ -152,6 +147,15 @@ if "ProductName" in filtered.columns:
 else:
     top_name, top_value = "Not available", 0
 daily = daily_sales(filtered)
+
+daily["ds"] = pd.to_datetime(daily["ds"])
+daily = (
+    daily.sort_values("ds")
+    .set_index("ds")
+    .asfreq("D", fill_value=0)
+    .rename_axis("ds")
+    .reset_index()
+)
 best_day = daily.loc[daily["y"].idxmax()] if not daily.empty else None
 i1.metric("Top Product by Revenue", top_name, help=f"Revenue: ₹{top_value:,.0f}")
 i2.metric("Highest-Revenue Day", pd.to_datetime(best_day["ds"]).strftime("%d %b %Y") if best_day is not None else "N/A",
@@ -165,27 +169,73 @@ if not daily.empty:
 else:
     st.info("Not enough sales data for a trend.")
 
+
 # Forecast
 st.subheader("🔮 30-Day Demand Forecast")
 st.caption("Revenue forecasts are estimates and not guarantees.")
+
 try:
     if daily["ds"].nunique() < 2:
         st.info("Choose a date range with at least two distinct sales days to forecast.")
     else:
         model, forecast = train_forecast(daily, periods=30)
         view = forecast.tail(min(len(forecast), 90))
-        forecast_fig = px.line(view, x="ds", y="yhat", labels={"ds": "Date", "yhat": "Forecast Revenue"},
-                               title="Historical + Forecasted Revenue")
+
+        forecast_fig = px.line(
+            view,
+            x="ds",
+            y="yhat",
+            labels={"ds": "Date", "yhat": "Forecast Revenue"},
+            title="Historical + Forecasted Revenue"
+        )
+
         if "y" in view.columns:
             actual = view.dropna(subset=["y"])
             if not actual.empty:
-                forecast_fig.add_scatter(x=actual["ds"], y=actual["y"], mode="lines", name="Actual Revenue")
+                forecast_fig.add_scatter(
+                    x=actual["ds"],
+                    y=actual["y"],
+                    mode="lines",
+                    name="Actual Revenue"
+                )
+
         st.plotly_chart(forecast_fig, width="stretch")
+
+           # Forecast Accuracy Evaluation
+    st.subheader("📊 Forecast Accuracy")
+
+    if len(daily) >= 10:
+        split_idx = int(len(daily) * 0.8)
+        train_data = daily.iloc[:split_idx]
+        test_data = daily.iloc[split_idx:].copy()
+
+        validation_model, _ = train_forecast(train_data, periods=0)
+        predictions = validation_model.predict(test_data[["ds"]])
+
+        actual_values = test_data["y"].to_numpy()
+        predicted_values = predictions["yhat"].to_numpy()
+        errors = actual_values - predicted_values
+
+        mae = abs(errors).mean()
+        rmse = (errors ** 2).mean() ** 0.5
+        total_actual = abs(actual_values).sum()
+        wape = abs(errors).sum() / total_actual * 100 if total_actual > 0 else float("nan")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("MAE", f"₹{mae:,.2f}")
+        col2.metric("RMSE", f"₹{rmse:,.2f}")
+        col3.metric("WAPE", f"{wape:.2f}%")
+
+        st.caption("Accuracy evaluated on the last 20% of historical sales days.")
+    else:
+        st.info("At least 10 days of sales history are required.")
+
 except Exception as exc:
     st.warning(f"Forecasting could not run: {exc}")
 
 # Customer segmentation
 st.subheader("👥 Customer Segmentation")
+
 
 try:
     rfm = build_rfm(filtered)
@@ -194,7 +244,7 @@ try:
     if segmented.empty:
         st.info("Not enough customer records for segmentation.")
     else:
-        summary = segmented.groupby("Cluster").agg(
+        summary = segmented.groupby("Segment").agg(
             Customers=("CustomerID", "count"),
             AvgRecency=("Recency", "mean"),
             AvgFrequency=("Frequency", "mean"),
@@ -208,12 +258,8 @@ try:
                 segmented,
                 x="Frequency",
                 y="Monetary",
-                color=segmented["Cluster"].astype(str),
-                hover_data=[
-                    c for c in ["CustomerID", "Recency"]
-                    if c in segmented.columns
-                ],
-                labels={"color": "Cluster"},
+                color="Segment",
+                hover_data=["CustomerID", "Recency"],
                 title="Customer Frequency vs Spend"
             )
             st.plotly_chart(scatter, width="stretch")
@@ -223,6 +269,7 @@ try:
 
 except Exception as exc:
     st.warning(f"Customer segmentation could not run: {exc}")
+
 
 # Product analytics
 st.subheader("🛍️ Product Analytics")
@@ -256,3 +303,66 @@ else:
     st.info("Inventory alerts require ProductID, ProductName, and StockQuantity columns.")
 
 st.caption("RetailPulse MVP • Built with Python, Scikit-learn, Prophet and Streamlit")
+# Customer Churn Risk Analysis
+st.subheader("🚨 Customer Churn Risk Analysis")
+st.caption("Rule-based analysis using days since the customer's last purchase.")
+
+
+try:
+    churn_data = load_data().copy()
+    churn_data["InvoiceDate"] = pd.to_datetime(churn_data["InvoiceDate"])
+
+    reference_date = churn_data["InvoiceDate"].max()
+
+    customer_activity = (
+        churn_data.groupby("CustomerID")
+        .agg(LastPurchase=("InvoiceDate", "max"),
+             TotalRevenue=("Revenue", "sum"),
+             Orders=("InvoiceDate", "count"))
+        .reset_index()
+    )
+
+    customer_activity["DaysInactive"] = (
+        reference_date - customer_activity["LastPurchase"]
+    ).dt.days
+
+    customer_activity["ChurnStatus"] = customer_activity["DaysInactive"].apply(
+        lambda days: (
+            "Active" if days <= 30
+            else "At Risk" if days <= 90
+            else "Inactive"
+        )
+    )
+
+    active_count = (customer_activity["ChurnStatus"] == "Active").sum()
+    risk_count = (customer_activity["ChurnStatus"] == "At Risk").sum()
+    inactive_count = (customer_activity["ChurnStatus"] == "Inactive").sum()
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Active Customers", active_count)
+    col2.metric("At-Risk Customers", risk_count)
+    col3.metric("Inactive Customers", inactive_count)
+
+    total_customers = len(customer_activity)
+    churn_rate = (
+        inactive_count / total_customers * 100
+        if total_customers else 0
+    )
+    st.metric("Historical Inactivity Rate", f"{churn_rate:.2f}%")
+
+    st.dataframe(
+        customer_activity.sort_values(
+            "DaysInactive", ascending=False
+        ),
+        width="stretch",
+        hide_index=True
+    )
+
+    st.info(
+        "Retention recommendation: Contact at-risk customers with "
+        "personalized offers. Re-engage inactive customers with "
+        "targeted win-back campaigns."
+    )
+
+except Exception as exc:
+    st.warning(f"Churn analysis could not run: {exc}")
